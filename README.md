@@ -1,109 +1,51 @@
-# velhhot-backend
+# Vél'hot Backend v2
 
-API FastAPI pour la plateforme Vél'hot — prédiction de disponibilité des stations Vélo'v de Lyon.
+FastAPI · Aurora PostgreSQL · S3 Parquet · Athena · JWT
 
-## Stack
+## Endpoints
 
-- **FastAPI** — framework API REST
-- **SQLAlchemy** — ORM pour Aurora PostgreSQL
-- **Pydantic** — validation des données
-- **PostgreSQL** (local) / **Aurora PostgreSQL** (AWS en production)
+| Méthode | Route | Auth | Description |
+|---------|-------|------|-------------|
+| POST | `/auth/register` | public | Inscription (nom, prénom, email, password) |
+| POST | `/auth/login` | public | Connexion → JWT |
+| GET | `/stations` | user+ | Toutes les stations du jour (S3) |
+| GET | `/stations/{id}` | user+ | Une station + prédictions ML |
+| GET | `/predict?station_id=X` | user+ | Prédictions ML seules |
+| GET | `/alerts` | user+ | Stations vides/pleines dans 30 min |
+| GET | `/dashboard/peak-hours` | analyste+ | Fill-rate moyen par heure (Athena) |
+| GET | `/dashboard/heatmap` | analyste+ | Fill-rate par station aujourd'hui (Athena) |
+| GET | `/historique/{id}` | user+ | Historique Aurora (`?from=...&to=...`) |
+| GET | `/` | public | Health check |
 
-## Installation
+## Démarrage local
 
 ```bash
-# 1. Cloner le repo
-git clone https://github.com/velhhot/velhhot-backend
-cd velhhot-backend
-
-# 2. Créer l'environnement virtuel
-python -m venv venv
-source venv/bin/activate        # Mac / Linux
-venv\Scripts\activate           # Windows
-
-# 3. Installer les dépendances
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-
-# 4. Configurer les variables d'environnement
-cp .env.example .env
-# Éditer .env avec tes valeurs locales
-
-# 5. Créer les bases locales (PostgreSQL doit être installé)
-createdb velohot_silver
-createdb velohot_gold
-
-# 6. Lancer le serveur
+cp .env.example .env   # remplir les valeurs
 uvicorn main:app --reload
+# → http://localhost:8000/docs
 ```
 
-## Endpoints disponibles
+## Variables d'environnement (.env)
 
-| Méthode | Route | Description |
-|---------|-------|-------------|
-| GET | `/` | Health check |
-| GET | `/stations` | Liste des stations avec disponibilité temps réel |
-| GET | `/stations/{id}` | Détail d'une station |
-| GET | `/stations/{id}/predictions` | Prédictions T+15, T+30, T+60 min |
-| GET | `/stations/{id}/alternatives` | Stations proches avec des vélos |
-| GET | `/alerts/active` | Alertes actives sur le réseau |
-| POST | `/alerts/subscribe` | S'abonner aux alertes d'une station |
-| GET | `/analytics/top-stations` | Top des stations les plus utilisées |
-| GET | `/analytics/trends` | Utilisation par heure et jour de semaine |
-| GET | `/analytics/heatmap` | Données pour la carte thermique |
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | URL Aurora PostgreSQL |
+| `JWT_SECRET` | Clé secrète JWT (min 32 chars) |
+| `JWT_EXPIRE_MINUTES` | Durée du token (défaut 60) |
+| `AWS_REGION` | Région AWS (défaut eu-west-3) |
+| `S3_BUCKET_SILVER` | Nom du bucket S3 silver |
+| `ATHENA_DATABASE` | Base de données Athena |
+| `ATHENA_OUTPUT_BUCKET` | Bucket pour les résultats Athena |
 
-## Documentation Swagger
-
-Une fois le serveur lancé, la doc interactive est disponible sur :
-
-- **Swagger UI** → http://localhost:8000/docs
-- **ReDoc** → http://localhost:8000/redoc
-
-## Tests
-
+Générer JWT_SECRET :
 ```bash
-pytest app/tests/ -v
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-## Structure du projet
+## Sur AWS
 
-```
-velhhot-backend/
-├── main.py                   ← point d'entrée FastAPI
-├── .env                      ← variables secrètes (non versionné)
-├── .env.example              ← template à copier
-├── requirements.txt
-└── app/
-    ├── config.py             ← lecture .env
-    ├── database.py           ← connexion PostgreSQL
-    ├── models.py             ← tables SQLAlchemy
-    ├── schemas.py            ← validation Pydantic
-    ├── routes/               ← endpoints par ressource
-    │   ├── stations.py
-    │   ├── predictions.py
-    │   ├── alternatives.py
-    │   ├── alerts.py
-    │   └── analytics.py
-    ├── services/             ← logique métier
-    │   ├── station_service.py
-    │   ├── alert_service.py
-    │   └── geo_service.py
-    └── tests/
-        ├── conftest.py       ← données fictives SQLite
-        ├── test_stations.py
-        └── test_alerts.py
-```
-
-## Branches Git
-
-- `main` → production uniquement
-- `develop` → développement en cours
-- `feature/xxx` → une branche par tâche
-
-## Variables d'environnement
-
-| Variable | Description | Exemple |
-|----------|-------------|---------|
-| `DATABASE_URL` | Connexion velohot_silver | `postgresql://user:pass@localhost/velohot_silver` |
-| `DATABASE_GOLD_URL` | Connexion velohot_gold | `postgresql://user:pass@localhost/velohot_gold` |
-| `AWS_REGION` | Région AWS | `eu-west-3` |
-| `ENV` | Environnement | `development` ou `production` |
+FastAPI tourne dans un conteneur Docker sur ECS Fargate.
+Les variables d'environnement sont injectées par Terraform via AWS Secrets Manager.
+IAM Role ECS doit avoir : `s3:GetObject`, `s3:ListBucket`, `athena:StartQueryExecution`, `athena:GetQueryResults`.

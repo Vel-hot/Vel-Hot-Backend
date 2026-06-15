@@ -1,126 +1,98 @@
-from pydantic import BaseModel, Field, EmailStr
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
+
+from pydantic import BaseModel, EmailStr
 
 
-# 
-#  Stations
-# 
+# ── Auth ──────────────────────────────────────────────────────────────────────
 
-class StationBase(BaseModel):
-    id:              int
-    nom:             str
-    commune:         str
-    adresse:         Optional[str] = None
-    latitude:        float
-    longitude:       float
-    capacite_totale: int
+class RegisterIn(BaseModel):
+    nom: str
+    prenom: str
+    email: EmailStr
+    password: str
 
 
-class StatutBase(BaseModel):
-    velos_dispo:       int
-    places_dispo:      int
-    velos_mecaniques:  Optional[int] = 0
-    velos_electriques: Optional[int] = 0
-    taux_remplissage:  float = Field(..., ge=0, le=100)
-    timestamp:         Optional[datetime] = None
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserOut(BaseModel):
+    id: int
+    nom: str
+    prenom: str
+    email: str
+    role: str
+    created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
-class StationAvecStatut(StationBase):
-    """Une station avec son statut temps réel — utilisée par GET /stations."""
-    statut: Optional[StatutBase] = None
-    etat:   str = Field(description="'disponible' | 'presque_vide' | 'vide' | 'presque_pleine' | 'pleine'")
+# ── Stations ──────────────────────────────────────────────────────────────────
 
-    class Config:
-        from_attributes = True
-
-
-# 
-#  Prédictions
-#
-
-class PredictionSchema(BaseModel):
-    """Prédictions du modèle ML pour une station."""
-    station_id:  int
-    taux_actuel: float = Field(..., description="Taux de remplissage actuel")
-    t_plus_15:   Optional[float] = Field(None, description="Taux prédit dans 15 min")
-    t_plus_30:   Optional[float] = Field(None, description="Taux prédit dans 30 min")
-    t_plus_60:   Optional[float] = Field(None, description="Taux prédit dans 60 min")
-    confiance:   Optional[float] = Field(None, description="Score de confiance 0.0 à 1.0")
-    timestamp:   datetime
-    alerte:      Optional[str]   = Field(None, description="Message d'alerte si saturation imminente")
-
-    class Config:
-        from_attributes = True
+class Predictions(BaseModel):
+    t15: float
+    t30: float
+    t60: float
 
 
-# 
-#  Alternatives
-# 
-
-class StationAlternative(StationBase):
-    """Une station alternative avec sa distance et son statut."""
-    distance_metres: float = Field(..., description="Distance en mètres depuis la station d'origine")
-    velos_dispo:     int
-    places_dispo:    int
-    taux_remplissage: float
-
-    class Config:
-        from_attributes = True
-
-
-#
-#  Alertes
-# 
-
-class AlerteSchema(BaseModel):
-    """Une alerte active sur le réseau."""
-    id:                int
-    station_id:        int
-    station_nom:       str
-    type_alerte:       str  = Field(..., description="'pleine' ou 'vide'")
-    minutes_restantes: int
-    timestamp:         datetime
-
-    class Config:
-        from_attributes = True
+class StationOut(BaseModel):
+    station_id: str
+    name: str
+    lat: float
+    lon: float
+    capacity: int
+    num_bikes_available: int
+    num_docks_available: int
+    fill_rate: float
+    status: str
+    hour: int
+    hour_sin: float
+    hour_cos: float
+    dow_sin: float
+    dow_cos: float
+    is_weekend: bool
+    timestamp: str
+    predictions: Optional[Predictions] = None
 
 
-class AbonnementCreate(BaseModel):
-    """Corps de la requête pour s'abonner aux alertes d'une station."""
-    station_id: int
-    email:      Optional[EmailStr] = None
+# ── Alerts ────────────────────────────────────────────────────────────────────
+
+class AlertOut(BaseModel):
+    station_id: str
+    type: str           # "EMPTY" | "FULL"
+    horizon: str        # "30min"
+    predicted_fill_rate: float
 
 
-class AbonnementResponse(BaseModel):
-    message:    str
-    station_id: int
-    token:      str
+class AlertsResponse(BaseModel):
+    alerts: List[AlertOut]
 
 
-# 
-#  Analytics
-# 
+# ── Dashboard ─────────────────────────────────────────────────────────────────
 
-class TopStation(BaseModel):
-    """Une station du top des plus utilisées."""
-    station_id:   int
-    station_nom:  str
-    commune:      str
-    nb_rotations: int   # nombre de vélos pris/déposés sur la période
+class PeakHourOut(BaseModel):
+    hour: int
+    avg_fill_rate: float
 
 
-class TendanceHeure(BaseModel):
-    """Utilisation moyenne pour une heure donnée."""
-    heure:              int   = Field(..., ge=0, le=23)
-    taux_moyen:         float
-    jour_de_semaine:    str   # "lundi", "mardi", etc.
+class HeatmapPointOut(BaseModel):
+    station_id: str
+    name: str
+    lat: float
+    lon: float
+    avg_fill_rate: float
 
 
-class HeatmapPoint(BaseModel):
-    """Un point de la carte thermique."""
-    latitude:  float
-    longitude: float
-    intensite: float = Field(..., ge=0, le=1, description="Intensité normalisée 0-1")
+# ── Historique ────────────────────────────────────────────────────────────────
+
+class HistoriqueOut(BaseModel):
+    station_id: str
+    fill_rate: float
+    num_bikes_available: int
+    num_docks_available: int
+    status: str
+    timestamp: datetime
+
+    model_config = {"from_attributes": True}

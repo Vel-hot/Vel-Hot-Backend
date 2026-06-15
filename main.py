@@ -1,53 +1,90 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
 
 from app.database import create_tables
-from app.routes import stations, predictions, alternatives, alerts, analytics
+from app.exceptions import DataSourceUnavailable
+from app.logging_config import get_logger, setup_logging
+from app.routes import auth, stations, predictions, alerts, dashboard, historique
+
+setup_logging()
+logger = get_logger(__name__)
 
 app = FastAPI(
     title="Vél'hot API",
     description="""
-    API de prédiction de disponibilité des stations Vélo'v de Lyon.
-    
-    ## Fonctionnalités
-    - **Stations** : disponibilité en temps réel des 428 stations
-    - **Prédictions** : remplissage prévu à T+15, T+30 et T+60 minutes
-    - **Alternatives** : stations proches avec des vélos disponibles
-    - **Alertes** : notifications de saturation imminente
-    - **Analytics** : statistiques pour les analystes de la ville
-    """,
-    version="1.0.0",
-    contact={"name": "Équipe Vél'hot"},
+API de prédiction de disponibilité des stations Vélo'v de Lyon.
+
+## Authentification
+1. `POST /auth/register` — créer un compte (nom, prénom, email, password)
+2. `POST /auth/login` — obtenir un JWT
+3. `GET /auth/me` — profil de l'utilisateur connecté
+4. Cliquer **Authorize** → coller le token brut (sans `Bearer`)
+
+## Rôles
+- **user** : stations, prédictions, alertes, historique
+- **analyste** / **admin** : + dashboard (peak-hours, heatmap)
+""",
+    version="2.1.0",
 )
 
-# Autoriser les appels depuis React (localhost:3000 en dev, domaine prod)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",  # Vite
-        "https://velhhot.app",   # domaine production à adapter
-    ],
+    allow_origins=["https://velhhot.app", "http://localhost:3000", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Enregistrement des routes
-app.include_router(stations.router,     prefix="/stations",   tags=["Stations"])
-app.include_router(predictions.router,  prefix="/stations",   tags=["Prédictions"])
-app.include_router(alternatives.router, prefix="/stations",   tags=["Alternatives"])
-app.include_router(alerts.router,       prefix="/alerts",     tags=["Alertes"])
-app.include_router(analytics.router,    prefix="/analytics",  tags=["Analytics"])
+app.include_router(auth.router,        prefix="/auth",        tags=["Auth"])
+app.include_router(stations.router,    prefix="/stations",    tags=["Stations"])
+app.include_router(predictions.router, prefix="/predict",     tags=["Prédictions"])
+app.include_router(alerts.router,      prefix="/alerts",      tags=["Alertes"])
+app.include_router(dashboard.router,   prefix="/dashboard",   tags=["Dashboard"])
+app.include_router(historique.router,  prefix="/historique",  tags=["Historique"])
+
+
+@app.exception_handler(DataSourceUnavailable)
+async def data_source_unavailable_handler(request: Request, exc: DataSourceUnavailable):
+    """S3/Athena inaccessible → 503 propre au lieu d'un 500 brut."""
+    logger.error("Source de données indisponible [%s] sur %s : %s",
+                  exc.source, request.url.path, exc.detail)
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "detail": f"Service temporairement indisponible ({exc.source})",
+            "source": exc.source,
+            "reason": exc.detail,
+        },
+    )
 
 
 @app.on_event("startup")
 def startup():
-    """Crée les tables en base au démarrage si elles n'existent pas encore."""
     create_tables()
+    logger.info("Vél'hot API démarrée (env=%s)", __import__("app.config", fromlist=["settings"]).settings.ENV)
 
 
 @app.get("/", tags=["Santé"])
 def health_check():
-    """Vérifie que l'API est bien en ligne."""
-    return {"status": "ok", "message": "Vél'hot API opérationnelle"}
+    """Health check public — utilisé par AWS API Gateway."""
+    return {"status": "ok", "version": "2.1.0"}
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(title=app.title, version=app.version,
+                          description=app.description, routes=app.routes)
+    schema["components"]["securitySchemes"] = {
+        "BearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+    }
+    for path in schema["paths"].values():
+        for method in path.values():
+            method["security"] = [{"BearerAuth": []}]
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi
