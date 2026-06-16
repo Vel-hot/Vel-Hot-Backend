@@ -1,4 +1,4 @@
-"""Tests pour /stations, /stations/{id}, /predict, /alerts — S3 mocké."""
+"""Tests pour /stations, /stations/{id}, /predict, /alerts — S3/ML mockés."""
 from unittest.mock import patch
 
 FAKE_STATIONS = [
@@ -18,9 +18,7 @@ FAKE_STATIONS = [
     },
 ]
 
-FAKE_PREDICTIONS = [
-    {"station_id": "1", "pred_t15": 0.58, "pred_t30": 0.55, "pred_t60": 0.50},
-]
+FAKE_PREDICTION = {"t15": 0.58, "t30": 0.55, "t60": 0.50}
 
 FAKE_ALERTS_PREDICTIONS = [
     {"station_id": "3", "pred_t15": 0.05, "pred_t30": 0.04, "pred_t60": 0.03},
@@ -48,9 +46,9 @@ def test_list_stations_empty(mock_save, mock_get, client, auth_headers):
     assert resp.json() == []
 
 
-@patch("app.routes.stations.s3_service.get_predictions", return_value=FAKE_PREDICTIONS)
+@patch("app.routes.stations.ml_service.predict_for_station", return_value=FAKE_PREDICTION)
 @patch("app.routes.stations.s3_service.get_station_by_id", return_value=FAKE_STATIONS[0])
-def test_get_station_by_id_with_predictions(mock_station, mock_preds, client, auth_headers):
+def test_get_station_by_id_with_predictions(mock_station, mock_predict, client, auth_headers):
     resp = client.get("/stations/1", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
@@ -66,8 +64,8 @@ def test_get_station_not_found(mock_station, client, auth_headers):
     assert resp.status_code == 404
 
 
-@patch("app.routes.predictions.s3_service.get_predictions", return_value=FAKE_PREDICTIONS)
-def test_predict_endpoint(mock_preds, client, auth_headers):
+@patch("app.routes.predictions.ml_service.predict_for_station", return_value=FAKE_PREDICTION)
+def test_predict_endpoint(mock_predict, client, auth_headers):
     resp = client.get("/predict?station_id=1", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
@@ -75,8 +73,8 @@ def test_predict_endpoint(mock_preds, client, auth_headers):
     assert data["predictions"]["t30"] == 0.55
 
 
-@patch("app.routes.predictions.s3_service.get_predictions", return_value=[])
-def test_predict_not_found(mock_preds, client, auth_headers):
+@patch("app.routes.predictions.ml_service.predict_for_station", return_value=None)
+def test_predict_not_found(mock_predict, client, auth_headers):
     resp = client.get("/predict?station_id=999", headers=auth_headers)
     assert resp.status_code == 404
 

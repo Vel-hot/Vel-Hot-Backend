@@ -1,4 +1,8 @@
-"""Requêtes Athena pour les endpoints /dashboard."""
+"""Requêtes Athena pour /dashboard/peak-hours et /dashboard/heatmap.
+
+Adapté au schéma réel (base velohot_silver_dev, table `status`,
+colonne `date` au format YYYY-MM-DD, workgroup velohot-dev).
+"""
 import time
 
 import boto3
@@ -11,8 +15,8 @@ from app.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-POLL_INTERVAL = 1
-MAX_WAIT      = 30
+POLL_INTERVAL = 0.5
+MAX_WAIT      = 20
 
 
 def _run_query(sql: str) -> pd.DataFrame:
@@ -22,20 +26,20 @@ def _run_query(sql: str) -> pd.DataFrame:
             QueryString=sql,
             QueryExecutionContext={"Database": settings.ATHENA_DATABASE},
             ResultConfiguration={"OutputLocation": settings.ATHENA_OUTPUT_BUCKET},
+            WorkGroup=settings.ATHENA_WORKGROUP,
         )
     except NoCredentialsError as e:
-        logger.error("Credentials AWS manquants pour Athena : %s", e)
         raise DataSourceUnavailable("Athena", "Credentials AWS non configurés") from e
     except ClientError as e:
         logger.error("Erreur démarrage requête Athena : %s", e)
         raise DataSourceUnavailable("Athena", f"Impossible de lancer la requête : {e}") from e
     except BotoCoreError as e:
-        logger.error("Erreur réseau Athena : %s", e)
         raise DataSourceUnavailable("Athena", "Connexion à Athena impossible") from e
 
     execution_id = response["QueryExecutionId"]
 
     elapsed = 0
+    state = None
     while elapsed < MAX_WAIT:
         time.sleep(POLL_INTERVAL)
         elapsed += POLL_INTERVAL
@@ -52,8 +56,10 @@ def _run_query(sql: str) -> pd.DataFrame:
             logger.error("Requête Athena %s : %s", state, reason)
             raise DataSourceUnavailable("Athena", f"Requête {state} : {reason}")
     else:
-        logger.error("Timeout Athena après %ss", MAX_WAIT)
         raise DataSourceUnavailable("Athena", f"Timeout après {MAX_WAIT}s")
+
+    if state != "SUCCEEDED":
+        raise DataSourceUnavailable("Athena", f"Requête {state}")
 
     try:
         paginator = client.get_paginator("get_query_results")
@@ -72,12 +78,10 @@ def _run_query(sql: str) -> pd.DataFrame:
 
 def get_peak_hours() -> list[dict]:
     """Fill_rate moyen par heure sur les 7 derniers jours."""
-    sql = """
-        SELECT
-            CAST(hour AS INTEGER)       AS hour,
-            ROUND(AVG(fill_rate), 4)    AS avg_fill_rate
-        FROM status
-        WHERE timestamp >= DATE_ADD('day', -7, CURRENT_DATE)
+    sql = f"""
+        SELECT hour, AVG(fill_rate) AS avg_fill_rate
+        FROM {settings.ATHENA_DATABASE}.status
+        WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
         GROUP BY hour
         ORDER BY hour
     """
@@ -85,27 +89,27 @@ def get_peak_hours() -> list[dict]:
     if df.empty:
         return []
     df["hour"]          = df["hour"].astype(int)
-    df["avg_fill_rate"] = df["avg_fill_rate"].astype(float)
+    df["avg_fill_rate"] = df["avg_fill_rate"].astype(float).round(4)
     return df.to_dict(orient="records")
 
 
 def get_heatmap() -> list[dict]:
     """Fill_rate moyen par station aujourd'hui avec lat/lon."""
-    sql = """
+    sql = f"""
         SELECT
             station_id,
-            ANY_VALUE(name)             AS name,
-            ANY_VALUE(lat)              AS lat,
-            ANY_VALUE(lon)              AS lon,
-            ROUND(AVG(fill_rate), 4)    AS avg_fill_rate
-        FROM status
-        WHERE timestamp >= CURRENT_DATE
-        GROUP BY station_id
+            ANY_VALUE(name) AS name,
+            lat,
+            lon,
+            AVG(fill_rate) AS avg_fill_rate
+        FROM {settings.ATHENA_DATABASE}.status
+        WHERE date = current_date
+        GROUP BY station_id, lat, lon
     """
     df = _run_query(sql)
     if df.empty:
         return []
     df["lat"]           = df["lat"].astype(float)
     df["lon"]           = df["lon"].astype(float)
-    df["avg_fill_rate"] = df["avg_fill_rate"].astype(float)
+    df["avg_fill_rate"] = df["avg_fill_rate"].astype(float).round(4)
     return df.to_dict(orient="records")

@@ -1,3 +1,8 @@
+"""Fixtures partagées : base SQLite en mémoire + client de test FastAPI.
+
+On surcharge DATABASE_URL et JWT_SECRET via variables d'environnement
+AVANT d'importer l'app, pour ne jamais toucher à la vraie base Aurora/locale.
+"""
 import os
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
@@ -15,6 +20,7 @@ from main import app
 
 @pytest.fixture(scope="function")
 def db_session():
+    """Base SQLite en mémoire, recréée pour chaque test."""
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -33,6 +39,7 @@ def db_session():
 
 @pytest.fixture(scope="function")
 def client(db_session):
+    """TestClient FastAPI avec la base de test injectée via dependency override."""
     def _override_get_db():
         try:
             yield db_session
@@ -47,6 +54,7 @@ def client(db_session):
 
 @pytest.fixture
 def registered_user(client):
+    """Crée un compte 'user' et retourne (email, password)."""
     payload = {
         "nom": "Test", "prenom": "User",
         "email": "user@test.com", "password": "motdepasse123",
@@ -58,6 +66,7 @@ def registered_user(client):
 
 @pytest.fixture
 def auth_headers(client, registered_user):
+    """Retourne les headers Authorization avec un token valide (rôle user)."""
     resp = client.post("/auth/login", json={
         "email": registered_user["email"],
         "password": registered_user["password"],
@@ -68,6 +77,7 @@ def auth_headers(client, registered_user):
 
 @pytest.fixture
 def admin_headers(client, db_session):
+    """Crée un compte admin directement en base et retourne ses headers."""
     from app.auth import create_access_token, hash_password
     from app.models import Utilisateur
 
