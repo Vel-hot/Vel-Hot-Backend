@@ -1,3 +1,4 @@
+import os
 from pydantic_settings import BaseSettings
 
 
@@ -9,6 +10,9 @@ class Settings(BaseSettings):
     AWS_REGION: str = "eu-west-3"
     S3_BUCKET_SILVER: str = "velhot-silver-dev"
     S3_BUCKET_MODELS: str = "velhot-models-dev"
+
+    AWS_ACCESS_KEY_ID: str | None = None
+    AWS_SECRET_ACCESS_KEY: str | None = None
 
     ATHENA_DATABASE: str = "velohot_silver_dev"
     ATHENA_WORKGROUP: str = "velohot-dev"
@@ -28,6 +32,12 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 
 settings = Settings()
+
+if settings.AWS_ACCESS_KEY_ID:
+    os.environ["AWS_ACCESS_KEY_ID"] = settings.AWS_ACCESS_KEY_ID
+if settings.AWS_SECRET_ACCESS_KEY:
+    os.environ["AWS_SECRET_ACCESS_KEY"] = settings.AWS_SECRET_ACCESS_KEY

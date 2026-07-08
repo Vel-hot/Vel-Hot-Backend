@@ -121,7 +121,7 @@ ATHENA_OUTPUT_BUCKET=s3://velhot-athena-dev/
 
 ENV=development
 LOG_LEVEL=INFO
-
+v
 # true  -> récupère les données via boto3 lambda.invoke() sur velhot-api-dev
 # false -> lecture directe S3/Athena (comportement historique)
 USE_LAMBDA_API=true
@@ -188,16 +188,6 @@ IAM refusée...), l'API renvoie un **503** :
 
 Si les préfixes S3 existent mais sont vides (pipeline pas encore exécuté),
 les endpoints renvoient une réponse vide (`[]`) sans erreur.
-
-## Statut connu
-
-`velhot-silver-dev/status/` est actuellement vide : le S3 trigger entre
-`velhot-ingest-velov-dev` (bronze, actif) et `velhot-transform-dev`
-(transform bronze→silver) n'est pas déclenché. Confirmé dans les deux
-modes (lecture directe et via `velhot-api-dev`, qui lit la même source).
-Le code de ce backend est correct et prêt — dès que ce trigger sera
-réparé côté infra, les endpoints retourneront des données réelles sans
-modification de code.
 
 ## Logging
 
