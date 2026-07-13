@@ -2,8 +2,9 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
-from app.database import create_tables
+from app.database import create_tables, SessionLocal
 from app.exceptions import DataSourceUnavailable
 from app.logging_config import get_logger, setup_logging
 from app.routes import auth, stations, predictions, alerts, dashboard, historique
@@ -67,9 +68,32 @@ def startup():
     logger.info("Vél'hot API démarrée (env=%s)", __import__("app.config", fromlist=["settings"]).settings.ENV)
 
 
-@app.get("/", tags=["Santé"])
+@app.get("/api/health", tags=["Santé"])
 def health_check():
-    """Health check public — utilisé par AWS API Gateway."""
+    """Health check public — utilisé par AWS ALB / ECS / App Runner."""
+    db_ok = False
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+        db_ok = True
+    except Exception:
+        pass
+
+    payload = {
+        "status": "ok" if db_ok else "degraded",
+        "version": "2.1.0",
+        "checks": {"database": "ok" if db_ok else "unreachable"},
+    }
+    return JSONResponse(
+        content=payload,
+        status_code=status.HTTP_200_OK if db_ok else status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
+@app.get("/", tags=["Santé"])
+def root():
+    """Redirect implicite vers /health — conservé pour compatibilité."""
     return {"status": "ok", "version": "2.1.0"}
 
 
