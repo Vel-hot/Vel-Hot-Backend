@@ -37,12 +37,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router,        prefix="/auth",        tags=["Auth"])
-app.include_router(stations.router,    prefix="/stations",    tags=["Stations"])
-app.include_router(predictions.router, prefix="/predict",     tags=["Prédictions"])
-app.include_router(alerts.router,      prefix="/alerts",      tags=["Alertes"])
-app.include_router(dashboard.router,   prefix="/dashboard",   tags=["Dashboard"])
-app.include_router(historique.router,  prefix="/historique",  tags=["Historique"])
+API_Prefix = "/api"
+app.include_router(auth.router,        prefix=f"{API_Prefix}/auth",        tags=["Auth"])
+app.include_router(stations.router,    prefix=f"{API_Prefix}/stations",    tags=["Stations"])
+app.include_router(predictions.router, prefix=f"{API_Prefix}/predict",     tags=["Prédictions"])
+app.include_router(alerts.router,      prefix=f"{API_Prefix}/alerts",      tags=["Alertes"])
+app.include_router(dashboard.router,   prefix=f"{API_Prefix}/dashboard",   tags=["Dashboard"])
+app.include_router(historique.router,  prefix=f"{API_Prefix}/historique",  tags=["Historique"])
 
 
 @app.exception_handler(DataSourceUnavailable)
