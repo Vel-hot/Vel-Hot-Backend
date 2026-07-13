@@ -11,7 +11,7 @@ docks_disabled, status, last_reported, hour, hour_sin, hour_cos, dow,
 dow_sin, dow_cos, is_weekend.
 """
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import boto3
@@ -62,10 +62,17 @@ def _read_parquet(key: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+from concurrent.futures import ThreadPoolExecutor
+
+
 def _read_status_for_date(date_str: str) -> pd.DataFrame:
     """Lit tous les fichiers status/station_id=*/date={date_str}/data.parquet."""
     objects = _list_objects("status/")
-    dfs = [_read_parquet(o["Key"]) for o in objects if f"date={date_str}" in o["Key"]]
+    keys = [o["Key"] for o in objects if f"date={date_str}" in o["Key"]]
+    
+    with ThreadPoolExecutor(max_workers=100) as executor:
+        dfs = list(executor.map(_read_parquet, keys))
+        
     dfs = [d for d in dfs if not d.empty]
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
@@ -81,7 +88,11 @@ def _read_today_status() -> pd.DataFrame:
 def _read_predictions_for_date(date_str: str) -> pd.DataFrame:
     """Lit tous les fichiers predictions/.../date={date_str}/..."""
     objects = _list_objects("predictions/")
-    dfs = [_read_parquet(o["Key"]) for o in objects if f"date={date_str}" in o["Key"]]
+    keys = [o["Key"] for o in objects if f"date={date_str}" in o["Key"]]
+    
+    with ThreadPoolExecutor(max_workers=100) as executor:
+        dfs = list(executor.map(_read_parquet, keys))
+        
     dfs = [d for d in dfs if not d.empty]
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
@@ -122,22 +133,51 @@ def _row_to_station_dict(row: pd.Series) -> dict:
     }
 
 
+_STATIONS_CACHE = None
+_STATIONS_CACHE_TIME = None
+
+
+def get_latest_pull_time(dt: datetime) -> datetime:
+    """Calcule le dernier moment attendu de mise à jour de l'API (XX:33 pour laisser 3 min de marge)."""
+    pull_time = dt.replace(minute=33, second=0, microsecond=0)
+    if dt.minute < 33:
+        pull_time -= timedelta(hours=1)
+    return pull_time
+
+
 def get_all_stations() -> list[dict]:
-    """Toutes les stations — dernière lecture du jour par station_id."""
+    """Toutes les stations — dernière lecture du jour par station_id, avec cache intelligent basé sur l'heure du pull."""
+    global _STATIONS_CACHE, _STATIONS_CACHE_TIME
+    
+    now = datetime.now(timezone.utc)
+    if _STATIONS_CACHE is not None and _STATIONS_CACHE_TIME is not None:
+        last_pull = get_latest_pull_time(now)
+        if _STATIONS_CACHE_TIME >= last_pull:
+            logger.info("Retour des stations depuis le cache in-memory (valide, dernier pull attendu à %s)", last_pull.strftime("%H:%M"))
+            return _STATIONS_CACHE
+
     df = _read_today_status()
     if df.empty:
+        if _STATIONS_CACHE:
+            logger.warning("Erreur lecture S3, retour des stations obsolètes du cache")
+            return _STATIONS_CACHE
         return []
     df = df.sort_values("timestamp").drop_duplicates("station_id", keep="last")
-    return [_row_to_station_dict(row) for _, row in df.iterrows()]
+    stations = [_row_to_station_dict(row) for _, row in df.iterrows()]
+    
+    _STATIONS_CACHE = stations
+    _STATIONS_CACHE_TIME = now
+    logger.info("Cache in-memory des stations mis à jour (%d stations)", len(stations))
+    return stations
 
 
 def get_station_by_id(station_id: str) -> Optional[dict]:
-    df = _read_today_status()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = f"status/station_id={station_id}/date={today}/data.parquet"
+    df = _read_parquet(key)
     if df.empty:
         return None
-    rows = df[df["station_id"].astype(str) == str(station_id)].sort_values("timestamp")
-    if rows.empty:
-        return None
+    rows = df.sort_values("timestamp")
     return _row_to_station_dict(rows.iloc[-1])
 
 

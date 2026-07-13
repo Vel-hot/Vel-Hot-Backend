@@ -35,12 +35,12 @@ def list_stations(
 
 
 @router.get("/{station_id}", response_model=StationOut,
-            summary="Une station + ses prédictions ML")
+            summary="Une station (sans prédictions)")
 def get_station(
     station_id: str,
     _user: TokenData = Depends(get_current_user),
 ):
-    """Retourne les données d'une station et le bloc predictions {t15, t30, t60}."""
+    """Retourne les données d'une station (les prédictions ne sont plus gérées par ce backend)."""
     if settings.USE_LAMBDA_API:
         station = lambda_api_client.get_station_by_id(station_id)
         if station is None:
@@ -48,6 +48,8 @@ def get_station(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Station {station_id} introuvable",
             )
+        if isinstance(station, dict) and "predictions" in station:
+            station["predictions"] = None
         return station
 
     station = s3_service.get_station_by_id(station_id)
@@ -56,7 +58,5 @@ def get_station(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Station {station_id} introuvable",
         )
-    preds = ml_service.predict_for_station(station_id)
-    if preds:
-        station["predictions"] = preds
+    station["predictions"] = None
     return station
