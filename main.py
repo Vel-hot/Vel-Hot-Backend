@@ -73,6 +73,16 @@ def health_check():
     return {"status": "ok", "version": "2.1.0"}
 
 
+@app.get("/api/health", tags=["Santé"])
+def health_check_api():
+    """Health check derrière l'ALB.
+
+    Le target group backend n'expose au load balancer que le préfixe /api/* ;
+    la sonde ECS/ALB interroge donc /api/health (et non /).
+    """
+    return {"status": "ok", "version": "2.1.0"}
+
+
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
