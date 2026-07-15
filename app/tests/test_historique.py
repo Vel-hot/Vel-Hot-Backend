@@ -5,7 +5,7 @@ from app.models import HistoriqueStation
 
 
 def test_historique_empty(client, auth_headers):
-    resp = client.get("/historique/1", headers=auth_headers)
+    resp = client.get("/api/historique/1", headers=auth_headers)
     assert resp.status_code == 200
     assert resp.json() == []
 
@@ -22,7 +22,7 @@ def test_historique_returns_records(client, auth_headers, db_session):
     ])
     db_session.commit()
 
-    resp = client.get("/historique/1", headers=auth_headers)
+    resp = client.get("/api/historique/1", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 2
@@ -42,8 +42,9 @@ def test_historique_filter_by_date(client, auth_headers, db_session):
     db_session.commit()
 
     from_date = (now - timedelta(days=1)).isoformat()
-    resp = client.get(f"/historique/1?from={from_date}", headers=auth_headers)
+    resp = client.get(f"/api/historique/1?from={from_date}", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
     assert data[0]["fill_rate"] == 0.6
+

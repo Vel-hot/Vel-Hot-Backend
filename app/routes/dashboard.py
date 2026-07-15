@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from app.auth import TokenData, require_role
 from app.config import settings
 from app.schemas import HeatmapPointOut, PeakHourOut
-from app.services import athena_service, lambda_api_client
+from app.services import s3_service
 
 router = APIRouter()
 
@@ -13,13 +13,8 @@ router = APIRouter()
 def peak_hours(
     _user: TokenData = Depends(require_role("admin", "analyste")),
 ):
-    """Réservé aux analystes et admins.
-
-    Source pilotée par USE_LAMBDA_API dans .env (voir app/config.py).
-    """
-    if settings.USE_LAMBDA_API:
-        return lambda_api_client.get_peak_hours()
-    return athena_service.get_peak_hours()
+    """Réservé aux analystes et admins. (Lit directement S3 sans Athena)"""
+    return s3_service.get_peak_hours_s3()
 
 
 @router.get("/heatmap", response_model=list[HeatmapPointOut],
@@ -27,10 +22,5 @@ def peak_hours(
 def heatmap(
     _user: TokenData = Depends(require_role("admin", "analyste")),
 ):
-    """Réservé aux analystes et admins.
-
-    Source pilotée par USE_LAMBDA_API dans .env (voir app/config.py).
-    """
-    if settings.USE_LAMBDA_API:
-        return lambda_api_client.get_heatmap()
-    return athena_service.get_heatmap()
+    """Réservé aux analystes et admins. (Lit directement S3 sans Athena)"""
+    return s3_service.get_heatmap_s3()
