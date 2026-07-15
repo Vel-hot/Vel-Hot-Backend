@@ -258,6 +258,54 @@ def get_all_stations() -> list[dict]:
     return stations
 
 
+# Cache du DataFrame brut d'une journée complète (toutes stations, tous
+# relevés intra-journaliers), indexé par date. Sert au slider temporel :
+# le playback rejoue la journée sans relire S3 à chaque pas. TTL court pour
+# le jour courant (nouveaux relevés toutes les ~5 min) ; les jours passés
+# sont immuables mais on garde la même TTL par simplicité.
+_DAY_STATUS_CACHE: dict[str, tuple[pd.DataFrame, datetime]] = {}
+_DAY_STATUS_TTL = timedelta(minutes=5)
+
+
+def _get_day_status(date_str: str) -> pd.DataFrame:
+    now = datetime.now(timezone.utc)
+    cached = _DAY_STATUS_CACHE.get(date_str)
+    if cached is not None and now - cached[1] < _DAY_STATUS_TTL:
+        return cached[0]
+
+    df = _read_status_for_date(date_str)
+    if df.empty and cached is not None:
+        # Lecture S3 vide (erreur transitoire) : on garde le cache existant.
+        return cached[0]
+    _DAY_STATUS_CACHE[date_str] = (df, now)
+    return df
+
+
+def get_stations_snapshot(at: datetime) -> list[dict]:
+    """État de toutes les stations à l'instant `at` (dernier relevé <= at ce jour).
+
+    Alimente le slider temporel du frontend : pour chaque station, on renvoie
+    le relevé le plus récent dont le timestamp ne dépasse pas `at`.
+    """
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    at = at.astimezone(timezone.utc)
+
+    df = _get_day_status(at.strftime("%Y-%m-%d"))
+    if df.empty:
+        logger.warning("Aucune donnée status pour le snapshot à %s", at.isoformat())
+        return []
+
+    ts = pd.to_datetime(df["timestamp"], utc=True)
+    df = df[ts <= at]
+    if df.empty:
+        # `at` est antérieur au premier relevé du jour : rien à montrer.
+        return []
+
+    df = df.sort_values("timestamp").drop_duplicates("station_id", keep="last")
+    return [_row_to_station_dict(row) for _, row in df.iterrows()]
+
+
 def get_station_by_id(station_id: str) -> Optional[dict]:
     # Si le cache des stations est chaud, on sert depuis celui-ci (aucune
     # lecture S3). Sinon on lit le seul fichier de la station (1 objet).

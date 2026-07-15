@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.auth import TokenData, get_current_user
@@ -9,6 +11,20 @@ from app.services import lambda_api_client, ml_service, s3_service
 from app.services.historique_service import save_snapshot
 
 router = APIRouter()
+
+
+@router.get("/snapshot", response_model=list[StationOut],
+            summary="État de toutes les stations à un instant donné")
+def stations_snapshot(
+    at: datetime = Query(..., description="Instant ISO 8601 (ex. 2026-07-15T14:30:00Z)"),
+    _user: TokenData = Depends(get_current_user),
+):
+    """Alimente le slider temporel : dernier relevé <= `at` pour chaque station.
+
+    Lecture directe du silver S3 (le mode Lambda API n'expose pas l'historique
+    intra-journalier). Renvoie [] si `at` précède le premier relevé du jour.
+    """
+    return s3_service.get_stations_snapshot(at)
 
 
 @router.get("", response_model=list[StationOut],
