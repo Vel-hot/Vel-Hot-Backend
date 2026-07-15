@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     ENV: str = "development"
     LOG_LEVEL: str = "INFO"
-    STATIONS_CACHE_TTL: int = 300
+    STATIONS_CACHE_TTL: int = 3600 # 1 heure
 
     class Config:
         env_file = ".env"
