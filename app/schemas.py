@@ -37,6 +37,29 @@ class Predictions(BaseModel):
     t60: float
 
 
+class StationPredictionOut(BaseModel):
+    """Prédiction gold pour une station (fill_rate prédit + vélos dérivés)."""
+    station_id: str
+    name: str
+    lat: float
+    lon: float
+    capacity: int
+    current_fill_rate: float
+    # fill_rate prédit (0..1) aux horizons +15 / +30 / +60 min
+    fill_rate: Predictions
+    # nombre de vélos prédit = round(fill_rate * capacity)
+    bikes: Predictions
+    source_timestamp: Optional[str] = None
+    prediction_ts: Optional[str] = None
+
+
+class PredictionsResponse(BaseModel):
+    generated_at: Optional[str] = None
+    model_key: Optional[str] = None
+    count: int
+    predictions: List[StationPredictionOut]
+
+
 class StationOut(BaseModel):
     station_id: str
     name: str
