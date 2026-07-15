@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     AWS_ACCESS_KEY_ID: str | None = None
     AWS_SECRET_ACCESS_KEY: str | None = None
 
-    ATHENA_DATABASE: str = "velohot_silver_dev"
-    ATHENA_WORKGROUP: str = "velohot-dev"
-    ATHENA_OUTPUT_BUCKET: str = "s3://velhot-athena-dev/"
+    ATHENA_DATABASE: str = "velhot_silver_dev"
+    ATHENA_WORKGROUP: str = "velhot-dev"
+    ATHENA_OUTPUT_BUCKET: str = "s3://velhot-athena-dev/athena-results/"
 
     # --- Lambda velhot-api-dev (équipe data) -----------------------------
     # USE_LAMBDA_API=true  -> les données (stations/predict/alerts/dashboard)
