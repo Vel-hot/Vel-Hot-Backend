@@ -11,6 +11,7 @@ docks_disabled, status, last_reported, hour, hour_sin, hour_cos, dow,
 dow_sin, dow_cos, is_weekend.
 """
 import io
+import threading as _threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -299,19 +300,53 @@ def get_all_stations() -> list[dict]:
 _DAY_STATUS_CACHE: dict[str, tuple[pd.DataFrame, datetime]] = {}
 _DAY_STATUS_TTL = timedelta(minutes=5)
 
+# stale-while-revalidate : quand le cache d'une journée est périmé, on sert
+# immédiatement la version périmée et on déclenche UN rafraîchissement en
+# arrière-plan. Le rebuild (lecture de 463 parquet, ~8 s sur 0.5 vCPU) n'est
+# ainsi jamais payé par une requête utilisateur -> plus d'à-coups toutes les
+# 5 min pendant le playback. _DAY_REFRESHING évite les rebuilds concurrents.
+_DAY_REFRESH_LOCK = _threading.Lock()
+_DAY_REFRESHING: set[str] = set()
+
+
+def _rebuild_day_status(date_str: str) -> pd.DataFrame:
+    df = _read_status_for_date(date_str, columns=_SNAPSHOT_COLUMNS)
+    if not df.empty:
+        _DAY_STATUS_CACHE[date_str] = (df, datetime.now(timezone.utc))
+    return df
+
+
+def _refresh_day_status_bg(date_str: str) -> None:
+    try:
+        _rebuild_day_status(date_str)
+        logger.info("day-status %s rafraîchi (arrière-plan)", date_str)
+    except Exception as e:  # noqa: BLE001 - un refresh raté ne doit rien casser
+        logger.warning("day-status %s : échec refresh arrière-plan : %s", date_str, e)
+    finally:
+        with _DAY_REFRESH_LOCK:
+            _DAY_REFRESHING.discard(date_str)
+
 
 def _get_day_status(date_str: str) -> pd.DataFrame:
     now = datetime.now(timezone.utc)
     cached = _DAY_STATUS_CACHE.get(date_str)
-    if cached is not None and now - cached[1] < _DAY_STATUS_TTL:
-        return cached[0]
 
-    df = _read_status_for_date(date_str, columns=_SNAPSHOT_COLUMNS)
-    if df.empty and cached is not None:
-        # Lecture S3 vide (erreur transitoire) : on garde le cache existant.
-        return cached[0]
-    _DAY_STATUS_CACHE[date_str] = (df, now)
-    return df
+    if cached is not None:
+        df, ts = cached
+        if now - ts >= _DAY_STATUS_TTL:
+            # Périmé : rafraîchit en arrière-plan (une seule fois), sert le stale.
+            with _DAY_REFRESH_LOCK:
+                if date_str not in _DAY_REFRESHING:
+                    _DAY_REFRESHING.add(date_str)
+                    _threading.Thread(
+                        target=_refresh_day_status_bg, args=(date_str,),
+                        name=f"refresh-day-{date_str}", daemon=True,
+                    ).start()
+        return df
+
+    # Aucun cache : premier appel (avant que le warmup n'ait fini). Build
+    # synchrone inévitable, mais ne concerne pas le régime établi.
+    return _rebuild_day_status(date_str)
 
 
 def get_stations_snapshot(at: datetime) -> list[dict]:
@@ -337,6 +372,53 @@ def get_stations_snapshot(at: datetime) -> list[dict]:
 
     df = df.sort_values("timestamp").drop_duplicates("station_id", keep="last")
     return [_row_to_station_dict(row) for _, row in df.iterrows()]
+
+
+# Cache de la timeline compacte du jour (séries par station), servie en un seul
+# appel au frontend. Recalculée au plus toutes les 30 s à partir du day-df.
+_TIMELINE_CACHE: dict[str, tuple[dict, datetime]] = {}
+_TIMELINE_TTL = timedelta(seconds=30)
+
+
+def get_day_timeline(date_str: str) -> dict:
+    """Séries intra-journalières de toutes les stations pour `date_str`.
+
+    Renvoie, par station, ses relevés (timestamps UTC en ms + vélos). Le
+    frontend charge cette réponse UNE fois puis calcule l'état à n'importe quel
+    instant du slider en local (recherche du dernier relevé <= instant), ce qui
+    supprime la rafale d'appels /snapshot annulés pendant le scrubbing.
+    """
+    now = datetime.now(timezone.utc)
+    cached = _TIMELINE_CACHE.get(date_str)
+    if cached is not None and now - cached[1] < _TIMELINE_TTL:
+        return cached[0]
+
+    df = _get_day_status(date_str)
+    if df.empty:
+        return _TIMELINE_CACHE[date_str][0] if date_str in _TIMELINE_CACHE else {
+            "date": date_str, "stations": []
+        }
+
+    df = df.sort_values("timestamp")
+    ts_ms = (df["timestamp"].astype("int64") // 1_000_000)
+
+    stations = []
+    for sid, idx in df.groupby("station_id").groups.items():
+        g = df.loc[idx]
+        last = g.iloc[-1]
+        stations.append({
+            "station_id": str(sid),
+            "name": str(last.get("name", "")),
+            "lat": float(last.get("lat", 0.0)),
+            "lon": float(last.get("lon", 0.0)),
+            "capacity": int(last.get("capacity", 0)),
+            "t": ts_ms.loc[idx].tolist(),
+            "bikes": g["bikes_available"].astype(int).tolist(),
+        })
+
+    result = {"date": date_str, "stations": stations}
+    _TIMELINE_CACHE[date_str] = (result, now)
+    return result
 
 
 def get_station_by_id(station_id: str) -> Optional[dict]:
@@ -377,10 +459,10 @@ def warm_caches() -> None:
     """
     now = datetime.now(timezone.utc)
     try:
-        _get_day_status(now.strftime("%Y-%m-%d"))
-        logger.info("warm_caches: snapshot du jour préchargé")
+        get_day_timeline(now.strftime("%Y-%m-%d"))
+        logger.info("warm_caches: timeline/snapshot du jour préchargés")
     except Exception as e:  # noqa: BLE001 - le warmup ne doit jamais crasher l'app
-        logger.warning("warm_caches: échec préchargement snapshot : %s", e)
+        logger.warning("warm_caches: échec préchargement timeline : %s", e)
     try:
         get_peak_hours_s3()
         logger.info("warm_caches: peak-hours (S3) préchargé")
