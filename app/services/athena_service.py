@@ -1,9 +1,16 @@
 """Requêtes Athena pour /dashboard/peak-hours et /dashboard/heatmap.
 
-Adapté au schéma réel (base velohot_silver_dev, table `status`,
-colonne `date` au format YYYY-MM-DD, workgroup velohot-dev).
+Adapté au schéma réel (base velhot_silver_dev, table `status_pp`, colonne de
+partition `date` au format YYYY-MM-DD, workgroup velhot-dev).
+
+`status_pp` est une table en *partition projection* (définie côté Terraform)
+qui expose `station_id` UNIQUEMENT en clé de partition — contrairement à la
+table `status` produite par le crawler, invalide car `station_id` y est à la
+fois colonne de données et partition (HIVE_INVALID_METADATA: duplicate columns).
 """
 import time
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import boto3
 import pandas as pd
@@ -16,7 +23,21 @@ from app.logging_config import get_logger
 logger = get_logger(__name__)
 
 POLL_INTERVAL = 0.5
-MAX_WAIT      = 20
+MAX_WAIT      = 15
+
+# Table Athena en partition projection (voir Terraform aws_glue_catalog_table).
+_TABLE = "status_pp"
+
+# Caches résultats : ces agrégats évoluent lentement. Le cache garantit des
+# réponses < 5 s (souvent quelques ms) même si une requête Athena froide prend
+# 2-4 s, et limite le coût (octets scannés facturés).
+_PEAK_CACHE: Optional[list[dict]] = None
+_PEAK_CACHE_TIME: Optional[datetime] = None
+_PEAK_TTL = timedelta(hours=1)
+
+_HEATMAP_CACHE: Optional[list[dict]] = None
+_HEATMAP_CACHE_TIME: Optional[datetime] = None
+_HEATMAP_TTL = timedelta(minutes=5)
 
 
 def _run_query(sql: str) -> pd.DataFrame:
@@ -78,23 +99,45 @@ def _run_query(sql: str) -> pd.DataFrame:
 
 def get_peak_hours() -> list[dict]:
     """Fill_rate moyen par heure sur les 7 derniers jours."""
+    global _PEAK_CACHE, _PEAK_CACHE_TIME
+    now = datetime.now(timezone.utc)
+    if (
+        _PEAK_CACHE is not None
+        and _PEAK_CACHE_TIME is not None
+        and now - _PEAK_CACHE_TIME < _PEAK_TTL
+    ):
+        return _PEAK_CACHE
+
     sql = f"""
         SELECT hour, AVG(fill_rate) AS avg_fill_rate
-        FROM {settings.ATHENA_DATABASE}.status
+        FROM {settings.ATHENA_DATABASE}.{_TABLE}
         WHERE date >= date_format(current_date - interval '7' day, '%Y-%m-%d')
         GROUP BY hour
         ORDER BY hour
     """
     df = _run_query(sql)
     if df.empty:
-        return []
+        return _PEAK_CACHE or []
     df["hour"]          = df["hour"].astype(int)
     df["avg_fill_rate"] = df["avg_fill_rate"].astype(float).round(4)
-    return df.to_dict(orient="records")
+    result = df.to_dict(orient="records")
+    _PEAK_CACHE, _PEAK_CACHE_TIME = result, now
+    return result
 
 
 def get_heatmap() -> list[dict]:
     """Fill_rate moyen par station aujourd'hui avec lat/lon."""
+    global _HEATMAP_CACHE, _HEATMAP_CACHE_TIME
+    now = datetime.now(timezone.utc)
+    if (
+        _HEATMAP_CACHE is not None
+        and _HEATMAP_CACHE_TIME is not None
+        and now - _HEATMAP_CACHE_TIME < _HEATMAP_TTL
+    ):
+        return _HEATMAP_CACHE
+
+    # `date` est une partition string 'YYYY-MM-DD' : on compare à une chaîne,
+    # pas au type DATE (current_date), sinon mismatch de types.
     sql = f"""
         SELECT
             station_id,
@@ -102,14 +145,16 @@ def get_heatmap() -> list[dict]:
             lat,
             lon,
             AVG(fill_rate) AS avg_fill_rate
-        FROM {settings.ATHENA_DATABASE}.status
-        WHERE date = current_date
+        FROM {settings.ATHENA_DATABASE}.{_TABLE}
+        WHERE date = date_format(current_date, '%Y-%m-%d')
         GROUP BY station_id, lat, lon
     """
     df = _run_query(sql)
     if df.empty:
-        return []
+        return _HEATMAP_CACHE or []
     df["lat"]           = df["lat"].astype(float)
     df["lon"]           = df["lon"].astype(float)
     df["avg_fill_rate"] = df["avg_fill_rate"].astype(float).round(4)
-    return df.to_dict(orient="records")
+    result = df.to_dict(orient="records")
+    _HEATMAP_CACHE, _HEATMAP_CACHE_TIME = result, now
+    return result

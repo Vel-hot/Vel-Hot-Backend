@@ -66,6 +66,14 @@ async def data_source_unavailable_handler(request: Request, exc: DataSourceUnava
 def startup():
     create_tables()
     logger.info("Vél'hot API démarrée (env=%s)", __import__("app.config", fromlist=["settings"]).settings.ENV)
+    # Préchauffage des caches S3 lourds en arrière-plan : les endpoints /snapshot
+    # et /peak-hours servent ainsi du cache chaud dès la première requête user,
+    # sans bloquer le démarrage ni la sonde de santé de l'ALB.
+    import threading
+
+    from app.services import s3_service
+
+    threading.Thread(target=s3_service.warm_caches, name="warm-caches", daemon=True).start()
 
 
 @app.get("/api/health", tags=["Santé"])
