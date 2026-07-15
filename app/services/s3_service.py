@@ -226,24 +226,22 @@ _STATIONS_CACHE = None
 _STATIONS_CACHE_TIME = None
 
 
-def get_latest_pull_time(dt: datetime) -> datetime:
-    """Calcule le dernier moment attendu de mise à jour de l'API (XX:33 pour laisser 3 min de marge)."""
-    pull_time = dt.replace(minute=33, second=0, microsecond=0)
-    if dt.minute < 33:
-        pull_time -= timedelta(hours=1)
-    return pull_time
-
-
 def get_all_stations() -> list[dict]:
-    """Toutes les stations — dernière lecture du jour par station_id, avec cache intelligent basé sur l'heure du pull."""
+    """Toutes les stations — dernière lecture du jour par station_id, avec cache in-memory configurable."""
     global _STATIONS_CACHE, _STATIONS_CACHE_TIME
     
     now = datetime.now(timezone.utc)
-    if _STATIONS_CACHE is not None and _STATIONS_CACHE_TIME is not None:
-        last_pull = get_latest_pull_time(now)
-        if _STATIONS_CACHE_TIME >= last_pull:
-            logger.info("Retour des stations depuis le cache in-memory (valide, dernier pull attendu à %s)", last_pull.strftime("%H:%M"))
-            return _STATIONS_CACHE
+    if (
+        _STATIONS_CACHE is not None 
+        and _STATIONS_CACHE_TIME is not None 
+        and (now - _STATIONS_CACHE_TIME).total_seconds() < settings.STATIONS_CACHE_TTL
+    ):
+        logger.info(
+            "Retour des stations depuis le cache in-memory (TTL %ds restant: %ds)", 
+            settings.STATIONS_CACHE_TTL,
+            int(settings.STATIONS_CACHE_TTL - (now - _STATIONS_CACHE_TIME).total_seconds())
+        )
+        return _STATIONS_CACHE
 
     df = _read_today_status()
     if df.empty:
@@ -311,3 +309,59 @@ def get_alerts(threshold_empty: float = 0.1, threshold_full: float = 0.9) -> lis
                 "predicted_fill_rate": round(float(t30), 4),
             })
     return alerts
+
+
+def get_peak_hours_s3() -> list[dict]:
+    """Calcule le fill_rate moyen par heure sur les 7 derniers jours en lisant directement S3 sans Athena."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    dates = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+    
+    objects = _list_objects("status/")
+    keys = []
+    for d_str in dates:
+        keys.extend([o["Key"] for o in objects if f"date={d_str}" in o["Key"]])
+        
+    if not keys:
+        return []
+        
+    with ThreadPoolExecutor(max_workers=100) as executor:
+        dfs = list(executor.map(_read_parquet, keys))
+        
+    dfs = [d for d in dfs if not d.empty]
+    if not dfs:
+        return []
+        
+    df = pd.concat(dfs, ignore_index=True)
+    if "hour" not in df.columns:
+        df["hour"] = pd.to_datetime(df["timestamp"]).dt.hour
+        
+    grouped = df.groupby("hour")["fill_rate"].mean().reset_index()
+    grouped = grouped.sort_values("hour")
+    
+    return [
+        {
+            "hour": int(row["hour"]),
+            "avg_fill_rate": round(float(row["fill_rate"]), 4)
+        }
+        for _, row in grouped.iterrows()
+    ]
+
+
+def get_heatmap_s3() -> list[dict]:
+    """Calcule le fill_rate moyen par station aujourd'hui en lisant directement S3 sans Athena."""
+    df = _read_today_status()
+    if df.empty:
+        return []
+        
+    grouped = df.groupby(["station_id", "name", "lat", "lon"])["fill_rate"].mean().reset_index()
+    return [
+        {
+            "station_id": str(row["station_id"]),
+            "name": str(row["name"]),
+            "lat": float(row["lat"]),
+            "lon": float(row["lon"]),
+            "avg_fill_rate": round(float(row["fill_rate"]), 4)
+        }
+        for _, row in grouped.iterrows()
+    ]

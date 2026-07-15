@@ -62,20 +62,9 @@ def get_current_user(
 
 
 def require_role(*roles: str):
-    """Restreint un endpoint à certains rôles.
-
-    Exemple :
-        @router.get("/dashboard/heatmap")
-        def heatmap(user = Depends(require_role("admin", "analyste"))):
-    """
+    """Restreint un endpoint à certains rôles. (Désactivé : tous les utilisateurs ont les mêmes droits)"""
     def _check(
         credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
     ) -> TokenData:
-        user = get_current_user(credentials)
-        if user.role not in roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Accès réservé aux rôles : {', '.join(roles)}",
-            )
-        return user
+        return get_current_user(credentials)
     return _check

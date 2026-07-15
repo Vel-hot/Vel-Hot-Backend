@@ -2,7 +2,7 @@
 
 
 def test_register_success(client):
-    resp = client.post("/auth/register", json={
+    resp = client.post("/api/auth/register", json={
         "nom": "Dupont", "prenom": "Jean",
         "email": "jean.dupont@test.com", "password": "motdepasse123",
     })
@@ -14,7 +14,7 @@ def test_register_success(client):
 
 
 def test_register_duplicate_email(client, registered_user):
-    resp = client.post("/auth/register", json={
+    resp = client.post("/api/auth/register", json={
         "nom": "Autre", "prenom": "Personne",
         "email": registered_user["email"], "password": "autremotdepasse",
     })
@@ -22,7 +22,7 @@ def test_register_duplicate_email(client, registered_user):
 
 
 def test_login_success(client, registered_user):
-    resp = client.post("/auth/login", json={
+    resp = client.post("/api/auth/login", json={
         "email": registered_user["email"],
         "password": registered_user["password"],
     })
@@ -33,7 +33,7 @@ def test_login_success(client, registered_user):
 
 
 def test_login_wrong_password(client, registered_user):
-    resp = client.post("/auth/login", json={
+    resp = client.post("/api/auth/login", json={
         "email": registered_user["email"],
         "password": "mauvais_mdp",
     })
@@ -41,7 +41,7 @@ def test_login_wrong_password(client, registered_user):
 
 
 def test_login_unknown_email(client):
-    resp = client.post("/auth/login", json={
+    resp = client.post("/api/auth/login", json={
         "email": "inconnu@test.com",
         "password": "peu importe",
     })
@@ -49,7 +49,7 @@ def test_login_unknown_email(client):
 
 
 def test_me_returns_profile(client, auth_headers, registered_user):
-    resp = client.get("/auth/me", headers=auth_headers)
+    resp = client.get("/api/auth/me", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["email"] == registered_user["email"]
@@ -57,10 +57,11 @@ def test_me_returns_profile(client, auth_headers, registered_user):
 
 
 def test_me_without_token(client):
-    resp = client.get("/auth/me")
+    resp = client.get("/api/auth/me")
     assert resp.status_code in (401, 403)
 
 
 def test_protected_endpoint_without_token(client):
-    resp = client.get("/stations")
+    resp = client.get("/api/stations")
     assert resp.status_code in (401, 403)
+

@@ -59,7 +59,7 @@ def registered_user(client):
         "nom": "Test", "prenom": "User",
         "email": "user@test.com", "password": "motdepasse123",
     }
-    resp = client.post("/auth/register", json=payload)
+    resp = client.post("/api/auth/register", json=payload)
     assert resp.status_code == 201
     return payload
 
@@ -67,12 +67,13 @@ def registered_user(client):
 @pytest.fixture
 def auth_headers(client, registered_user):
     """Retourne les headers Authorization avec un token valide (rôle user)."""
-    resp = client.post("/auth/login", json={
+    resp = client.post("/api/auth/login", json={
         "email": registered_user["email"],
         "password": registered_user["password"],
     })
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
 
 
 @pytest.fixture
