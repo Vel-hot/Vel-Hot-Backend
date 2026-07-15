@@ -27,6 +27,25 @@ def stations_snapshot(
     return s3_service.get_stations_snapshot(at)
 
 
+@router.get("/day-timeline",
+            summary="Séries intra-journalières de toutes les stations (1 appel)")
+def stations_day_timeline(
+    date: str | None = Query(
+        None, description="Jour AAAA-MM-JJ (UTC). Défaut : aujourd'hui."
+    ),
+    _user: TokenData = Depends(get_current_user),
+):
+    """Renvoie toute la timeline du jour en une réponse.
+
+    Le frontend la charge UNE fois puis calcule l'état des stations à n'importe
+    quel instant du slider côté client — plus de rafale d'appels /snapshot
+    annulés pendant le scrubbing. Timestamps `t` en ms epoch UTC.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    day = date or _dt.now(_tz.utc).strftime("%Y-%m-%d")
+    return s3_service.get_day_timeline(day)
+
+
 @router.get("", response_model=list[StationOut],
             summary="Toutes les stations du jour")
 def list_stations(
