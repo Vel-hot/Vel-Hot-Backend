@@ -383,9 +383,21 @@ def warm_caches() -> None:
         logger.warning("warm_caches: échec préchargement snapshot : %s", e)
     try:
         get_peak_hours_s3()
-        logger.info("warm_caches: peak-hours préchargé")
+        logger.info("warm_caches: peak-hours (S3) préchargé")
     except Exception as e:  # noqa: BLE001
-        logger.warning("warm_caches: échec préchargement peak-hours : %s", e)
+        logger.warning("warm_caches: échec préchargement peak-hours S3 : %s", e)
+
+    # Préchauffe aussi le cache Athena : la requête froide (~4-5 s) est ainsi
+    # payée au démarrage, pas par le premier appel utilisateur (< 5 s garanti).
+    # Import local pour éviter tout cycle d'import.
+    from app.services import athena_service
+    for label, fn in (("peak-hours", athena_service.get_peak_hours),
+                      ("heatmap", athena_service.get_heatmap)):
+        try:
+            fn()
+            logger.info("warm_caches: %s (Athena) préchargé", label)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("warm_caches: échec préchargement %s Athena : %s", label, e)
 
 
 def get_alerts(threshold_empty: float = 0.1, threshold_full: float = 0.9) -> list[dict]:
