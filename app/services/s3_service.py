@@ -11,6 +11,7 @@ docks_disabled, status, last_reported, hour, hour_sin, hour_cos, dow,
 dow_sin, dow_cos, is_weekend.
 """
 import io
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -55,24 +56,80 @@ def _read_parquet(key: str) -> pd.DataFrame:
         body = s3.get_object(Bucket=settings.S3_BUCKET_SILVER, Key=key)["Body"].read()
         return pq.read_table(io.BytesIO(body)).to_pandas()
     except ClientError as e:
-        logger.warning("Lecture impossible %s : %s", key, e)
+        # NoSuchKey est attendu : une station peut ne pas avoir de relevé pour
+        # la date demandée (clé construite à partir de la liste des station_id).
+        if e.response.get("Error", {}).get("Code") == "NoSuchKey":
+            logger.debug("Aucun fichier pour %s", key)
+        else:
+            logger.warning("Lecture impossible %s : %s", key, e)
         return pd.DataFrame()
     except Exception as e:
         logger.warning("Fichier Parquet illisible %s : %s", key, e)
         return pd.DataFrame()
 
 
-from concurrent.futures import ThreadPoolExecutor
+# --- Liste des station_id (mise en cache) --------------------------------
+# Le layout status/station_id={id}/date={date}/ empêche de préfixer par date.
+# Lister status/ sans délimiteur ramène TOUS les fichiers de TOUTES les dates
+# (des dizaines de milliers d'objets, coût croissant dans le temps).
+# On liste uniquement les préfixes station_id=* (Delimiter="/") : borné à ~463
+# entrées, ~15x plus rapide. La liste des stations change très rarement -> cache.
+_STATION_IDS_CACHE: Optional[list[str]] = None
+_STATION_IDS_CACHE_TIME: Optional[datetime] = None
+_STATION_IDS_TTL = timedelta(hours=6)
+
+
+def _list_station_ids() -> list[str]:
+    global _STATION_IDS_CACHE, _STATION_IDS_CACHE_TIME
+    now = datetime.now(timezone.utc)
+    if (
+        _STATION_IDS_CACHE is not None
+        and _STATION_IDS_CACHE_TIME is not None
+        and now - _STATION_IDS_CACHE_TIME < _STATION_IDS_TTL
+    ):
+        return _STATION_IDS_CACHE
+
+    try:
+        s3 = _get_s3()
+        paginator = s3.get_paginator("list_objects_v2")
+        ids: list[str] = []
+        for page in paginator.paginate(
+            Bucket=settings.S3_BUCKET_SILVER, Prefix="status/", Delimiter="/"
+        ):
+            for cp in page.get("CommonPrefixes", []):
+                # cp["Prefix"] == "status/station_id=<id>/"
+                prefix = cp["Prefix"]
+                if "station_id=" in prefix:
+                    ids.append(prefix.split("station_id=")[1].rstrip("/"))
+    except NoCredentialsError as e:
+        logger.error("Credentials AWS manquants : %s", e)
+        raise DataSourceUnavailable("S3", "Credentials AWS non configurés") from e
+    except ClientError as e:
+        logger.error("Erreur S3 (liste stations) : %s", e)
+        raise DataSourceUnavailable("S3", f"Accès refusé ou bucket introuvable : {e}") from e
+    except BotoCoreError as e:
+        logger.error("Erreur réseau S3 : %s", e)
+        raise DataSourceUnavailable("S3", "Connexion à S3 impossible") from e
+
+    _STATION_IDS_CACHE = ids
+    _STATION_IDS_CACHE_TIME = now
+    return ids
 
 
 def _read_status_for_date(date_str: str) -> pd.DataFrame:
-    """Lit tous les fichiers status/station_id=*/date={date_str}/data.parquet."""
-    objects = _list_objects("status/")
-    keys = [o["Key"] for o in objects if f"date={date_str}" in o["Key"]]
-    
+    """Lit tous les fichiers status/station_id=*/date={date_str}/data.parquet.
+
+    Construit les clés directement à partir de la liste (cachée) des station_id,
+    au lieu de lister — puis filtrer — tous les objets de status/.
+    """
+    keys = [
+        f"status/station_id={sid}/date={date_str}/data.parquet"
+        for sid in _list_station_ids()
+    ]
+
     with ThreadPoolExecutor(max_workers=100) as executor:
         dfs = list(executor.map(_read_parquet, keys))
-        
+
     dfs = [d for d in dfs if not d.empty]
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
@@ -86,22 +143,54 @@ def _read_today_status() -> pd.DataFrame:
 
 
 def _read_predictions_for_date(date_str: str) -> pd.DataFrame:
-    """Lit tous les fichiers predictions/.../date={date_str}/..."""
-    objects = _list_objects("predictions/")
-    keys = [o["Key"] for o in objects if f"date={date_str}" in o["Key"]]
-    
+    """Lit les prédictions de la couche gold pour une date.
+
+    Le layout est predictions/date={date}/data.parquet (un seul fichier pour
+    toutes les stations) : on lit la clé directement. En repli (sous-partitions
+    éventuelles), on liste puis lit ce qui correspond à la date.
+    """
+    df = _read_parquet(f"predictions/date={date_str}/data.parquet")
+    if not df.empty:
+        return df
+
+    objects = _list_objects(f"predictions/date={date_str}/")
+    keys = [o["Key"] for o in objects if o["Key"].endswith(".parquet")]
+    if not keys:
+        return pd.DataFrame()
     with ThreadPoolExecutor(max_workers=100) as executor:
         dfs = list(executor.map(_read_parquet, keys))
-        
     dfs = [d for d in dfs if not d.empty]
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 
+# Cache des prédictions : la couche gold est régénérée toutes les ~15 min.
+# Une TTL de 5 min (cadence d'ingestion) évite de relire S3 à chaque requête
+# (endpoints /predict, /predict/{id} et /alerts partagent le même cache).
+_PREDICTIONS_CACHE: Optional[pd.DataFrame] = None
+_PREDICTIONS_CACHE_TIME: Optional[datetime] = None
+_PREDICTIONS_TTL = timedelta(minutes=5)
+
+
 def _read_today_predictions() -> pd.DataFrame:
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    global _PREDICTIONS_CACHE, _PREDICTIONS_CACHE_TIME
+    now = datetime.now(timezone.utc)
+    if (
+        _PREDICTIONS_CACHE is not None
+        and _PREDICTIONS_CACHE_TIME is not None
+        and now - _PREDICTIONS_CACHE_TIME < _PREDICTIONS_TTL
+    ):
+        return _PREDICTIONS_CACHE
+
+    today = now.strftime("%Y-%m-%d")
     df = _read_predictions_for_date(today)
     if df.empty:
         logger.warning("Aucune prédiction pour %s dans s3://%s/predictions/", today, settings.S3_BUCKET_SILVER)
+        if _PREDICTIONS_CACHE is not None:
+            return _PREDICTIONS_CACHE
+        return df
+
+    _PREDICTIONS_CACHE = df
+    _PREDICTIONS_CACHE_TIME = now
     return df
 
 
@@ -172,6 +261,15 @@ def get_all_stations() -> list[dict]:
 
 
 def get_station_by_id(station_id: str) -> Optional[dict]:
+    # Si le cache des stations est chaud, on sert depuis celui-ci (aucune
+    # lecture S3). Sinon on lit le seul fichier de la station (1 objet).
+    if _STATIONS_CACHE is not None and _STATIONS_CACHE_TIME is not None:
+        last_pull = get_latest_pull_time(datetime.now(timezone.utc))
+        if _STATIONS_CACHE_TIME >= last_pull:
+            for st in _STATIONS_CACHE:
+                if st["station_id"] == str(station_id):
+                    return st
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     key = f"status/station_id={station_id}/date={today}/data.parquet"
     df = _read_parquet(key)
